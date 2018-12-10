@@ -19,14 +19,17 @@ type zaHeaderAndTable struct {
 func main() {
 	docxFileName := flag.String("docxFileName", "", "имя файла-шаблона")
 	jsonFileName := flag.String("jsonFileName", "", `имя файла с данными json. Пример: {"Header":{"key1":"val1"},"Table1":[{"keytab1":"valtab1"}]}`)
+	showFields := flag.Bool("ПоказатьСписокПолейШаблона", false, "распечатать список merge-полей файла шаблона")
 	Ключ := flag.String("КлючУникальности", "", "добавка к имени результирующего файла")
 	flag.Parse()
 
 	if *docxFileName == "" {
 		log.Fatalf("не передан параметр docxFileName")
+		flag.Usage()
 	}
 	if *Ключ == "" {
 		log.Fatalf("не передан параметр КлючУникальности")
+		flag.Usage()
 	}
 
 	var datastr zaHeaderAndTable //точто загружается в док
@@ -82,7 +85,9 @@ func main() {
 
 	//отладка существующих полей
 	for _, v := range doc.MergeFields() {
-		//debug log.Printf("%s\n", v)
+		if *showFields {
+			fmt.Printf("%s\n", v)
+		}
 		_, is := datastr.Header[v]
 		if !is {
 			datastr.Header[v] = " <не вказано> " //незаполненные поля сделать ___________
