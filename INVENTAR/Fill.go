@@ -44,6 +44,7 @@ func main() {
 		}
 		datastr.Table1 = []map[int]string{
 			{1: "1", 2: "Товар1", 3: "год2018"},
+			{1: "2", 2: "Товар2", 3: "2017"},
 		}
 		bstr, err := json.Marshal(datastr)
 		if err != nil {
@@ -70,21 +71,31 @@ func main() {
 	if err != nil {
 		log.Fatalf("%s\n%s", err, "docx файл не читается.")
 	}
-	//отладка полей
+	// When Word saves a document, it removes all unused styles.  This means to
+	// copy the styles from an existing document, you must first create a
+	// document that contains text in each style of interest.  As an example,
+	// see the template.docx in this directory.  It contains a paragraph set in
+	// each style that Word supports by default.
+	// for _, s := range doc.Styles.Styles() {
+	// 	fmt.Println("style", s.Name(), "has ID of", s.StyleID(), "type is", s.Type())
+	// }
+
+	//отладка существующих полей
 	for _, v := range doc.MergeFields() {
-		log.Printf("%s\n", v)
+		//debug log.Printf("%s\n", v)
 		_, is := datastr.Header[v]
 		if !is {
-			datastr.Header[v] = " <не вказано> "
+			datastr.Header[v] = " <не вказано> " //незаполненные поля сделать ___________
 		}
 	}
-	//незаполненные поля сделать ___________
 
-	doc.MailMerge(datastr.Header) //вставка в док
+	doc.MailMerge(datastr.Header) //вставка шапки в док
 
+	//ЗАПОЛНЕНИЕ ТАБЛИЦЫ
 	//найти нужную строку
 	var tabfound bool = false
 	var tabindex int
+	var totalcells int //сколько возможно передеть колонок в таблицу
 	tables := doc.Tables()
 	for i, tab := range tables {
 		//col1text := tab.Rows()[0].Cells()[0].Paragraphs()[0].Runs()[0].Text()
@@ -106,6 +117,7 @@ func main() {
 			if col1text == "1" && col2text == "2" {
 				tabfound = true
 				tabindex = i
+				totalcells = len(row.Cells()) //сколько возможно передеть колонок в таблицу
 				break
 			}
 			// 	fmt.Printf("%s\n", string(j))
@@ -123,12 +135,19 @@ func main() {
 	}
 	if tabfound {
 		tab := doc.Tables()[tabindex]
+		tab.Properties().SetStyle("TableGridZa") //в исходной документе должен быть этот стиль "таблицы"
 		for _, datamap := range datastr.Table1 {
 
 			nrow := tab.AddRow()
-			for c, cell := range nrow.Cells() {
-				cell.AddParagraph().AddRun().AddText(datamap[c])
+			for nc := 1; nc <= totalcells; nc++ {
+
+				ncell := nrow.AddCell()
+				npar := ncell.AddParagraph()
+
+				nrun := npar.AddRun()
+				nrun.AddText(datamap[nc]) //нам передан номер колонки по порядку
 			}
+
 		}
 	}
 	новфайл := string(*Ключ) + "=" + *docxFileName //сохранение
