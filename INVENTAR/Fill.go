@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 
@@ -20,13 +21,20 @@ type zaHeaderAndTable struct {
 	Table1           []map[int]string
 }
 
+type serviceConfig struct {
+	pathToTemplates string
+	showFields      bool
+	fullPathLogFile string
+}
+
+var currentConfig serviceConfig
 var logfile *log.Logger
 
 func main() {
 	pathToTemplates := flag.String("PathToTemplates", "", "путь к файлам-шаблонам")
 	jsonFileName := flag.String("jsonFileName", "", `имя файла с данными json. Пример: {"Header":{"key1":"val1"},"Table1":[{"keytab1":"valtab1"}]}`)
 	showFields := flag.Bool("ПоказатьСписокПолейШаблона", false, "распечатать список merge-полей файла шаблона")
-	Ключ := flag.String("КлючУникальности", "", "добавка к имени результирующего файла")
+	//Ключ := flag.String("КлючУникальности", "", "добавка к имени результирующего файла")
 	fullPathLogFile := flag.String("logfile", "", "полный путь к лог файлу")
 	flag.Parse()
 
@@ -45,13 +53,23 @@ func main() {
 		flag.Usage()
 		log.Fatalf("%s\n", "не передан параметр PathToTemplates - путь к каталогу шаблонов документов")
 	}
-	if *Ключ == "" {
-		flag.Usage()
-		log.Fatalf("%s\n", "не передан параметр КлючУникальности.")
-	}
-	if *jsonFileName == "" {  //не передан файл, запустить http 
+	// if *Ключ == "" {
+	// 	flag.Usage()
+	// 	log.Fatalf("%s\n", "не передан параметр КлючУникальности.")
+	// }
+	if *jsonFileName == "" { //не передан файл, запустить http
 
-		//start action(w io.Writer, pathToTemplates *string, toreadbytes io.Reader, Ключ *string, showFields *bool)
+		// global var
+		currentConfig = serviceConfig{
+			pathToTemplates: *pathToTemplates,
+			showFields:      *showFields,
+			fullPathLogFile: *fullPathLogFile,
+		}
+
+		var hand http.HandlerFunc = handlerhttp
+		err = http.ListenAndServe("127.0.0.1:1313", hand)
+		fmt.Printf("%s\n%s", "Http server Exited:", err)
+
 	} else { //передан файл с данными
 		f, err := os.Open(*jsonFileName)
 		if err != nil {
@@ -60,7 +78,7 @@ func main() {
 		databytes, err := ioutil.ReadAll(f)
 
 		//tempdir := os.TempDir()
-		новфайл := string(*Ключ) + "=" + "debugfile.docx" //сохранение имя
+		новфайл := "debugfile.docx" //сохранение имя
 		newfilefullpath := filepath.Join(".\\", новфайл)
 		wdebug, err := os.OpenFile(newfilefullpath, os.O_CREATE|os.O_WRONLY, 0) //for debug
 		if err != nil {
@@ -68,16 +86,43 @@ func main() {
 			os.Exit(1)
 		}
 
-		err = CreateDocxFromStruct(wdebug, databytes, pathToTemplates, Ключ, showFields)
+		err = CreateDocxFromStruct(wdebug, databytes, *pathToTemplates, *showFields)
 	}
 
 }
 
-func action(w io.Writer, pathToTemplates *string, toreadbytes io.Reader, Ключ *string, showFields *bool) error {
+func handlerhttp(w http.ResponseWriter, r *http.Request) {
+	//action(w, )
+	if r.URL.Path == "/docxcreator" {
+		if r.Method == "GET" {
+			w.Write([]byte("POST should be used!"))
+			return
+		}
+		rdr := r.Body
+		// if err != nil {
+		// 	logfile.Printf("%s", err)
+		// }
+
+		//debug
+		// jsonbytes := make([]byte, 0, 3000)
+		// jsonbytes, err := ioutil.ReadAll(rdr)
+		// if err != nil {
+		// 	logfile.Printf("%s", err)
+		// }
+		// w.Write(jsonbytes)
+		err := action(w, rdr)
+		if err != nil {
+			logfile.Printf("%s", err)
+		}
+
+	}
+}
+
+func action(w io.Writer, toreadbytes io.ReadCloser) error {
 
 	var databytes []byte //то что прочитано из файла
 	databytes, err := ioutil.ReadAll(toreadbytes)
-	err = CreateDocxFromStruct(w, databytes, pathToTemplates, Ключ, showFields)
+	err = CreateDocxFromStruct(w, databytes, currentConfig.pathToTemplates, currentConfig.showFields)
 	if err != nil {
 		logfile.Printf("%s\n%s\n", "Ошибка: при создании документа.", err)
 		return err
@@ -85,7 +130,9 @@ func action(w io.Writer, pathToTemplates *string, toreadbytes io.Reader, Клю�
 	return nil
 }
 
-func CreateDocxFromStruct(w io.Writer, databytes []byte, pathToTemplates *string, Ключ *string, showFields *bool) error {
+// CreateDocxFromStruct creates doxc document through gooxml and fills mergefields and adds
+// rows to table. Fills rows from databytes which are json utf8.
+func CreateDocxFromStruct(w io.Writer, databytes []byte, pathToTemplates string, showFields bool) error {
 
 	datastr, err := getzaHeaderAndTable(databytes) //converts json to struct
 	if err != nil {
@@ -101,7 +148,7 @@ func CreateDocxFromStruct(w io.Writer, databytes []byte, pathToTemplates *string
 	}
 
 	//opens template
-	doc, err := document.Open(filepath.Join(*pathToTemplates, datastr.DocxTemplateName))
+	doc, err := document.Open(filepath.Join(pathToTemplates, datastr.DocxTemplateName))
 	if err != nil {
 		flag.Usage()
 		logfile.Printf("%s\n%s", err, "docx файл-шаблон не читается.")
@@ -118,7 +165,7 @@ func CreateDocxFromStruct(w io.Writer, databytes []byte, pathToTemplates *string
 
 	//дозаполнение непереданных но существующих полей
 	for _, v := range doc.MergeFields() {
-		if *showFields {
+		if showFields {
 			fmt.Fprintf(w, "%s\n", v)
 		}
 		_, is := datastr.Header[v]
