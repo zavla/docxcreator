@@ -4,75 +4,108 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"os"
+	"path/filepath"
 
 	"baliance.com/gooxml/document"
 )
 
+// zaHeaderAndTable то что передается нам в json
 type zaHeaderAndTable struct {
-	Header map[string]string
-	Table1 []map[int]string
+	DocxTemplateName string
+	Header           map[string]string
+	Table1           []map[int]string
 }
 
+var logfile *log.Logger
+
 func main() {
-	docxFileName := flag.String("docxFileName", "", "имя файла-шаблона")
+	pathToTemplates := flag.String("PathToTemplates", "", "путь к файлам-шаблонам")
 	jsonFileName := flag.String("jsonFileName", "", `имя файла с данными json. Пример: {"Header":{"key1":"val1"},"Table1":[{"keytab1":"valtab1"}]}`)
 	showFields := flag.Bool("ПоказатьСписокПолейШаблона", false, "распечатать список merge-полей файла шаблона")
 	Ключ := flag.String("КлючУникальности", "", "добавка к имени результирующего файла")
+	fullPathLogFile := flag.String("logfile", "", "полный путь к лог файлу")
 	flag.Parse()
 
-	if *docxFileName == "" {
-		log.Fatalf("не передан параметр docxFileName")
+	if *fullPathLogFile == "" {
 		flag.Usage()
+		log.Fatalf("%s\n", "не передан параметр logfile - полный путь к лог файлу")
+	}
+
+	flog, err := os.OpenFile(*fullPathLogFile, os.O_RDWR|os.O_CREATE, 0)
+	if err != nil {
+		log.Fatalf("%s\n%s\n", "не смогло создать лог файл "+(*fullPathLogFile), err)
+	}
+	logfile = log.New(flog, "", log.Ldate|log.Ltime)
+
+	if *pathToTemplates == "" {
+		flag.Usage()
+		log.Fatalf("%s\n", "не передан параметр PathToTemplates - путь к каталогу шаблонов документов")
 	}
 	if *Ключ == "" {
-		log.Fatalf("не передан параметр КлючУникальности")
 		flag.Usage()
+		log.Fatalf("%s\n", "не передан параметр КлючУникальности.")
 	}
+	if *jsonFileName == "" {  //не передан файл, запустить http 
 
-	var datastr zaHeaderAndTable //точто загружается в док
-	var databytes []byte         //то что прочитано из файла
-
-	if *jsonFileName == "" {
-		//test values
-		datastr.Header = map[string]string{
-			"ФирмаНаименование": "ООО ХОЛОД",
-			//"":"",
-			"е1":            "1",
-			"е2":            "2",
-			"е3":            "3",
-			"ДатаСкладання": "18-11-2018р.",
-		}
-		datastr.Table1 = []map[int]string{
-			{1: "1", 2: "Товар1", 3: "год2018"},
-			{1: "2", 2: "Товар2", 3: "2017"},
-		}
-		bstr, err := json.Marshal(datastr)
-		if err != nil {
-			log.Fatalf("%s", "bad")
-		}
-		databytes = []byte(bstr)
-		fmt.Printf("TEST DATA: %#v", datastr)
-	} else {
+		//start action(w io.Writer, pathToTemplates *string, toreadbytes io.Reader, Ключ *string, showFields *bool)
+	} else { //передан файл с данными
 		f, err := os.Open(*jsonFileName)
 		if err != nil {
-			log.Fatalf("%s\n%s", err, "файл с данными не открывается.")
+			log.Fatalf("%s\n%s\n", err, "файл с данными не открывается.")
 		}
-		databytes, err = ioutil.ReadAll(f)
-		//reads json
+		databytes, err := ioutil.ReadAll(f)
 
+		//tempdir := os.TempDir()
+		новфайл := string(*Ключ) + "=" + "debugfile.docx" //сохранение имя
+		newfilefullpath := filepath.Join(".\\", новфайл)
+		wdebug, err := os.OpenFile(newfilefullpath, os.O_CREATE|os.O_WRONLY, 0) //for debug
+		if err != nil {
+			logfile.Printf("%s\n%s", err, "Ошибка: результат не записывается в файл")
+			os.Exit(1)
+		}
+
+		err = CreateDocxFromStruct(wdebug, databytes, pathToTemplates, Ключ, showFields)
 	}
-	datastr = getzaHeaderAndTable(databytes)
-	log.Printf("%v", datastr)
 
-	//
+}
 
-	//fills the doc
-	doc, err := document.Open(*docxFileName)
+func action(w io.Writer, pathToTemplates *string, toreadbytes io.Reader, Ключ *string, showFields *bool) error {
+
+	var databytes []byte //то что прочитано из файла
+	databytes, err := ioutil.ReadAll(toreadbytes)
+	err = CreateDocxFromStruct(w, databytes, pathToTemplates, Ключ, showFields)
 	if err != nil {
-		log.Fatalf("%s\n%s", err, "docx файл не читается.")
+		logfile.Printf("%s\n%s\n", "Ошибка: при создании документа.", err)
+		return err
+	}
+	return nil
+}
+
+func CreateDocxFromStruct(w io.Writer, databytes []byte, pathToTemplates *string, Ключ *string, showFields *bool) error {
+
+	datastr, err := getzaHeaderAndTable(databytes) //converts json to struct
+	if err != nil {
+		logfile.Printf("%s\n%s\n", "json не разбирается", err)
+		return err
+	}
+	//log.Printf("%v\n", datastr)
+
+	if datastr.DocxTemplateName == "" {
+		flag.Usage()
+		logfile.Printf("%s\n", "в json не передано поле DocxTemplateName, имя файла-шаблона.")
+		return err
+	}
+
+	//opens template
+	doc, err := document.Open(filepath.Join(*pathToTemplates, datastr.DocxTemplateName))
+	if err != nil {
+		flag.Usage()
+		logfile.Printf("%s\n%s", err, "docx файл-шаблон не читается.")
+		return err
 	}
 	// When Word saves a document, it removes all unused styles.  This means to
 	// copy the styles from an existing document, you must first create a
@@ -83,14 +116,14 @@ func main() {
 	// 	fmt.Println("style", s.Name(), "has ID of", s.StyleID(), "type is", s.Type())
 	// }
 
-	//отладка существующих полей
+	//дозаполнение непереданных но существующих полей
 	for _, v := range doc.MergeFields() {
 		if *showFields {
-			fmt.Printf("%s\n", v)
+			fmt.Fprintf(w, "%s\n", v)
 		}
 		_, is := datastr.Header[v]
 		if !is {
-			datastr.Header[v] = " <не вказано> " //незаполненные поля сделать ___________
+			datastr.Header[v] = " <не вказано> "
 		}
 	}
 
@@ -98,9 +131,46 @@ func main() {
 
 	//ЗАПОЛНЕНИЕ ТАБЛИЦЫ
 	//найти нужную строку
-	var tabfound bool = false
+	var tabfound bool
 	var tabindex int
 	var totalcells int //сколько возможно передеть колонок в таблицу
+
+	tabfound, tabindex, totalcells = findOurTable(doc) //поиск таблицы
+
+	if tabfound {
+		tab := doc.Tables()[tabindex]
+		tab.Properties().SetStyle("TableGridZa")                      //в исходной документе должен быть этот стиль "таблицы"
+		addRowWithCellsAndFillTexts(&tab, totalcells, datastr.Table1) //добавление строк
+	}
+
+	//сохранение результата
+	err = doc.Save(w)
+	if err != nil {
+		logfile.Printf("%s", "Ошибка: невозможна запись в io.writer")
+		return err
+	}
+	return nil
+}
+
+func getzaHeaderAndTable(bstr []byte) (zaHeaderAndTable, error) {
+	var v zaHeaderAndTable
+	err := json.Unmarshal(bstr, &v)
+	if err != nil {
+		log.Printf("%s\n%s", "не смогло прочесть json", err)
+		return v, err
+
+	}
+	return v, nil
+
+}
+
+func findOurTable(doc *document.Document) (bool, int, int) {
+	//seeks the table with the row with cells with text
+	//1 2
+	var tabfound bool
+	var tabindex int
+	var totalcells int //сколько возможно передеть колонок в таблицу
+
 	tables := doc.Tables()
 	for i, tab := range tables {
 		//col1text := tab.Rows()[0].Cells()[0].Paragraphs()[0].Runs()[0].Text()
@@ -138,36 +208,22 @@ func main() {
 		}
 
 	}
-	if tabfound {
-		tab := doc.Tables()[tabindex]
-		tab.Properties().SetStyle("TableGridZa") //в исходной документе должен быть этот стиль "таблицы"
-		for _, datamap := range datastr.Table1 {
+	return tabfound, tabindex, totalcells
 
-			nrow := tab.AddRow()
-			for nc := 1; nc <= totalcells; nc++ {
-
-				ncell := nrow.AddCell()
-				npar := ncell.AddParagraph()
-
-				nrun := npar.AddRun()
-				nrun.AddText(datamap[nc]) //нам передан номер колонки по порядку
-			}
-
-		}
-	}
-	новфайл := string(*Ключ) + "=" + *docxFileName //сохранение
-	err = doc.SaveToFile(новфайл)
-	if err != nil {
-		log.Fatalf("%s\n%s", err, "результат не записывается в файл")
-	}
 }
 
-func getzaHeaderAndTable(bstr []byte) zaHeaderAndTable {
-	var v zaHeaderAndTable
-	err := json.Unmarshal(bstr, &v)
-	if err != nil {
-		log.Fatalf("%s\n%s", "не смогло прочесть json", err)
-	}
-	return v
+func addRowWithCellsAndFillTexts(tab *document.Table, totalcells int, sliceofmaps []map[int]string) {
+	for _, datamap := range sliceofmaps {
 
+		nrow := tab.AddRow()
+		for nc := 1; nc <= totalcells; nc++ {
+
+			ncell := nrow.AddCell()
+			npar := ncell.AddParagraph()
+
+			nrun := npar.AddRun()
+			nrun.AddText(datamap[nc]) //нам передан номер колонки по порядку
+		}
+
+	}
 }
