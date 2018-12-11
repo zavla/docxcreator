@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -27,8 +28,25 @@ type serviceConfig struct {
 	fullPathLogFile string
 }
 
+type responseStruct struct {
+	Error string
+	Data  []byte
+}
+
 var currentConfig serviceConfig
 var logfile *log.Logger
+
+func makeresponse(Data []byte, rerr string) []byte {
+	resp := &responseStruct{
+		Error: rerr,
+		Data:  Data,
+	}
+	b, err := json.Marshal(&resp)
+	if err != nil {
+		logfile.Printf("%s", err)
+	}
+	return b
+}
 
 func main() {
 	pathToTemplates := flag.String("PathToTemplates", "", "путь к файлам-шаблонам")
@@ -95,7 +113,8 @@ func handlerhttp(w http.ResponseWriter, r *http.Request) {
 	//action(w, )
 	if r.URL.Path == "/docxcreator" {
 		if r.Method == "GET" {
-			w.Write([]byte("POST should be used!"))
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write(makeresponse([]byte{}, fmt.Sprintf("%s", "POST should be used.")))
 			return
 		}
 		rdr := r.Body
@@ -113,6 +132,8 @@ func handlerhttp(w http.ResponseWriter, r *http.Request) {
 		err := action(w, rdr)
 		if err != nil {
 			logfile.Printf("%s", err)
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write(makeresponse([]byte{}, fmt.Sprintf("%s", err)))
 		}
 
 	}
@@ -142,9 +163,9 @@ func CreateDocxFromStruct(w io.Writer, databytes []byte, pathToTemplates string,
 	//log.Printf("%v\n", datastr)
 
 	if datastr.DocxTemplateName == "" {
-		flag.Usage()
-		logfile.Printf("%s\n", "в json не передано поле DocxTemplateName, имя файла-шаблона.")
-		return err
+		errstr := "в json не передано поле DocxTemplateName, имя файла-шаблона."
+		logfile.Printf("%s\n", errstr)
+		return errors.New(errstr)
 	}
 
 	//opens template
