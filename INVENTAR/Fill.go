@@ -1,3 +1,5 @@
+// to debug run
+// curl.exe -T .\ex1.txt --url http://127.0.0.1:1313/docxcreator --verbose --output .\out2.docx
 package main
 
 import (
@@ -52,6 +54,7 @@ func main() {
 	pathToTemplates := flag.String("PathToTemplates", "", "путь к файлам-шаблонам")
 	jsonFileName := flag.String("jsonFileName", "", `имя файла с данными json. Пример: {"Header":{"key1":"val1"},"Table1":[{"keytab1":"valtab1"}]}`)
 	showFields := flag.Bool("ПоказатьСписокПолейШаблона", false, "распечатать список merge-полей файла шаблона")
+	bindAddressPort := flag.String("bindAddressPort", "127.0.0.1:8080", "слушать на адресе")
 	//Ключ := flag.String("КлючУникальности", "", "добавка к имени результирующего файла")
 	fullPathLogFile := flag.String("logfile", "", "полный путь к лог файлу")
 	flag.Parse()
@@ -85,7 +88,8 @@ func main() {
 		}
 
 		var hand http.HandlerFunc = handlerhttp
-		err = http.ListenAndServe("127.0.0.1:1313", hand)
+		// err = http.ListenAndServe("127.0.0.1:1313", hand)
+		err = http.ListenAndServe(*bindAddressPort, hand)
 		fmt.Printf("%s\n%s", "Http server Exited:", err)
 
 	} else { //передан файл с данными
@@ -118,9 +122,6 @@ func handlerhttp(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		rdr := r.Body
-		// if err != nil {
-		// 	logfile.Printf("%s", err)
-		// }
 
 		//debug
 		// jsonbytes := make([]byte, 0, 3000)
@@ -152,7 +153,7 @@ func action(w io.Writer, toreadbytes io.ReadCloser) error {
 }
 
 // CreateDocxFromStruct creates doxc document through gooxml and fills mergefields and adds
-// rows to table. Fills rows from databytes which are json utf8.
+// rows to table. Fills rows from databytes which are json utf8 encoded struct zaHeaderAndTable.
 func CreateDocxFromStruct(w io.Writer, databytes []byte, pathToTemplates string, showFields bool) error {
 
 	datastr, err := getzaHeaderAndTable(databytes) //converts json to struct

@@ -11,7 +11,7 @@
             "mode": "auto",
             "program": "${fileDirname}",
             "env": {},
-            "args": ["--jsonFileName","ex1.txt","--PathToTemplates",".\\","--КлючУникальности","zatest","--logfile",".\\docxcreator.log" ]
+            "args": ["--PathToTemplates",".\\","--logfile",".\\docxcreator.log","--bindAddressPort","192.168.3.53:8080" ]
         }
     ]
 }
