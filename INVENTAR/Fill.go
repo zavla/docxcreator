@@ -1,5 +1,6 @@
 // to debug run
-// curl.exe -T .\ex1.txt --url http://127.0.0.1:1313/docxcreator --verbose --output .\out2.docx
+// curl.exe -T .\ex1.txt --url http://127.0.0.1:8080/docxcreator --verbose --output .\out2.docx
+
 package main
 
 import (
@@ -204,7 +205,7 @@ func CreateDocxFromStruct(w io.Writer, databytes []byte, pathToTemplates string)
 		}
 		_, is := datastr.Header[v]
 		if !is {
-			datastr.Header[v] = "____________"
+			datastr.Header[v] = "_"
 		}
 	}
 	if datastr.ShowFields {
