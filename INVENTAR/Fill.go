@@ -1,9 +1,13 @@
 // to debug run
 // curl.exe -T .\ex1.txt --url http://127.0.0.1:8080/docxcreator --verbose --output .\out2.docx
 
+// to create a service
+// New-Service -Name docxcreator -BinaryPathName F:\Zavla_VB\go\src\INVENTY\INVENTAR\INVENTAR.exe -Description "creats docx documents" -StartupType Manual
+
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -18,6 +22,8 @@ import (
 	"strings"
 
 	"baliance.com/gooxml/document"
+	"golang.org/x/sys/windows/svc"
+	"golang.org/x/sys/windows/svc/eventlog"
 )
 
 // zaHeaderAndTable we expecting as json
@@ -35,6 +41,7 @@ type zaHeaderAndTable struct {
 type serviceConfig struct {
 	pathToTemplates string
 	fullPathLogFile string
+	bindAddressPort string
 }
 
 // error response struct, returned by service as json
@@ -46,6 +53,9 @@ type responseStruct struct {
 
 var currentConfig serviceConfig
 var logfile *log.Logger
+var elog *eventlog.Log
+
+const thisServiceName = "docxcreator"
 
 // jsons the error message
 func makeresponse(rerr string, StrData string, Data []byte) []byte {
@@ -62,31 +72,91 @@ func makeresponse(rerr string, StrData string, Data []byte) []byte {
 }
 
 func main() {
-	pathToTemplates := flag.String("PathToTemplates", "", "path to templates files. Template name expected in incoming json.")
-	jsonFileName := flag.String("jsonFileName", "", `file with jsoned data, utf-8. Not-a-service mode. Example of json: {"Header":{"key1":"val1"},"Table1":[{"#numberOfColumn":"valueinColumnnOfTable1"}]}`)
 
-	bindAddressPort := flag.String("bindAddressPort", "127.0.0.1:8080", "bind service to address and port")
+	// when starts as a service PathToTemplates should not contain `\"`
+	// because \" breaks the flag.Parse()
+	fset := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 
-	fullPathLogFile := flag.String("logfile", "", "path and name to service log file")
-	flag.Parse()
+	pathToTemplates := fset.String("PathToTemplates", "", "path to templates files. Template name expected in incoming json.")
+	jsonFileName := fset.String("jsonFileName", "", `file with jsoned data, utf-8. Used in command mode.`)
 
-	if *fullPathLogFile == "" {
-		flag.Usage()
-		log.Fatalf("%s\n", "не передан параметр logfile - полный путь к лог файлу")
+	bindAddressPort := fset.String("bindAddressPort", "127.0.0.1:8080", "bind service to address and port. Used in service mode.")
+
+	fullPathLogFile := fset.String("logfile", "", "path and name to service log file. Used in service mode.")
+
+	fset.Parse(os.Args[1:])
+
+	// *debug service start
+	// fullPathStartLogFile := "f:\\Zavla_VB\\go\\src\\INVENTY\\INVENTAR\\logSERVICE.log"
+	// fstart, err := os.OpenFile(fullPathStartLogFile, os.O_CREATE|os.O_RDWR, 0)
+	// if err != nil {
+	// 	log.Fatalf("%s", "can't create "+fullPathStartLogFile)
+	// }
+	// fmt.Fprintf(fstart, "%s\t\t%s\n", time.Now(), "bindAddressPort="+(*bindAddressPort))
+	// fmt.Fprintf(fstart, "%#v\n", os.Args[:])
+	// defer fstart.Close()
+	//return
+	// *debug service start, end
+
+	isInterActive, err := svc.IsAnInteractiveSession()
+	if err != nil {
+		//log.Fatalf("%s", err)
+	}
+	if !isInterActive {
+
+		err := eventlog.InstallAsEventCreate(thisServiceName, eventlog.Info|eventlog.Error)
+		if err != nil {
+			log.Printf("%s\n%s\n", err, "can't InstallAsEventCreate ...")
+		}
+		elog, err = eventlog.Open(thisServiceName)
+		if err != nil {
+			log.Printf("%s\n%s\n", err, "started without event log...")
+		}
+		defer elog.Close()
+		elog.Info(1, "service "+thisServiceName+" is starting...")
+
+		if *fullPathLogFile == "" {
+			errstr := "parameter logfile is empty"
+
+			bwriter := bytes.NewBuffer(make([]byte, 0, 200))
+			fset.SetOutput(bwriter)
+
+			fmt.Fprintf(bwriter, "%s\n", errstr)
+			fset.Usage()
+			elog.Info(1, bwriter.String())
+			log.Fatalf("%s\n", errstr)
+		}
+
+	} else {
+		if *fullPathLogFile == "" {
+			fset.Usage()
+			log.Fatalf("%s\n", "parameter logfile is empty")
+		}
+
 	}
 
+	// begins log
 	flog, err := os.OpenFile(*fullPathLogFile, os.O_RDWR|os.O_CREATE, 0)
 	if err != nil {
+		if !isInterActive {
+			elog.Info(1, "service "+thisServiceName+" could not open its log file: "+(*fullPathLogFile))
+		}
 		log.Fatalf("%s\n%s\n", "Error: can't create log file: "+(*fullPathLogFile), err)
 	}
 
 	logfile = log.New(flog, "", log.Ldate|log.Ltime)
-
-	// log is ready
+	logfile.Printf("%s", "in main() ...")
+	if !isInterActive {
+		elog.Info(1, "service "+thisServiceName+" started log file: "+(*fullPathLogFile))
+	}
+	// logfile is ready
 
 	if *pathToTemplates == "" {
-		flag.Usage()
-		log.Fatalf("%s\n", "Error: PathToTemplates - path to a folder with docx templates needed.")
+		fset.Usage()
+		if !isInterActive {
+			elog.Info(1, "service "+thisServiceName+" needs parameter pathToTemplates")
+		}
+		logfile.Fatalf("%s\n", "Error: PathToTemplates - path to a folder with docx templates needed.")
 	}
 
 	if *jsonFileName == "" { //starts as a service, uses http
@@ -95,18 +165,31 @@ func main() {
 		currentConfig = serviceConfig{
 			pathToTemplates: *pathToTemplates,
 			fullPathLogFile: *fullPathLogFile,
+			bindAddressPort: *bindAddressPort,
 		}
 
-		var hand http.HandlerFunc = handlerhttp
-		//starts serving
-		err = http.ListenAndServe(*bindAddressPort, hand)
+		if isInterActive {
+			err = runHTTP(currentConfig.bindAddressPort)
+			fmt.Printf("%s\n%s", "Http server Exited:", err)
 
-		fmt.Printf("%s\n%s", "Http server Exited:", err)
+		} else {
+
+			// runs server on other goroutine
+			go runHTTP(currentConfig.bindAddressPort)
+
+			// runs SCM responder on other goroutine
+			err := svc.Run(thisServiceName, &Tservice{currentConfig: currentConfig})
+			logfile.Printf("%s", "service "+thisServiceName+" exited.")
+			if err != nil {
+				logfile.Printf("%s %s", "service "+thisServiceName+" exited with error: ", err)
+				log.Fatalf("%s", err)
+			}
+		}
 
 	} else { //command line mode, expecting file
 		f, err := os.Open(*jsonFileName)
 		if err != nil {
-			log.Fatalf("%s\n%s\n", err, "Error: can't open file with json utf-8.")
+			logfile.Fatalf("%s\n%s\n", err, "Error: can't open file with json utf-8.")
 		}
 		databytes, err := ioutil.ReadAll(f)
 
@@ -157,11 +240,14 @@ func action(w io.Writer, toreadbytes io.ReadCloser) ([]byte, error) {
 		return []byte{}, err
 	}
 	// CreateDocxFromStruct creates docx files (writes to w)
+	// databytes has a field with name of template
 	info, err := CreateDocxFromStruct(w, databytes, currentConfig.pathToTemplates)
 	if err != nil {
 		// may be an information message from CreateDocxFromStruct if showFileds parameter
 		logfile.Printf("%s\n%s\n", "Error: failed create docx file.", err)
 		return info, err
+	} else {
+		//logfile.Printf("%s %d\n", "")
 	}
 	return []byte{}, nil
 }
@@ -184,10 +270,11 @@ func CreateDocxFromStruct(w io.Writer, databytes []byte, pathToTemplates string)
 	}
 
 	//opens template
-	doc, err := document.Open(filepath.Join(pathToTemplates, datastr.DocxTemplateName))
+	fullPathToTemplate := filepath.Join(pathToTemplates, datastr.DocxTemplateName)
+	doc, err := document.Open(fullPathToTemplate)
 	if err != nil {
-		flag.Usage()
-		logfile.Printf("%s\n%s", err, "Error: can't read docx template file.")
+
+		logfile.Printf("%s\n%s", err, "Error: can't read docx template file: "+fullPathToTemplate)
 		return []byte{}, err
 	}
 	// When Word saves a document, it removes all unused styles.  This means to
@@ -236,6 +323,7 @@ func CreateDocxFromStruct(w io.Writer, databytes []byte, pathToTemplates string)
 		logfile.Printf("%s", "Error: can't write into io.writer.")
 		return []byte{}, err
 	}
+	logfile.Printf("%s", "Successuly served "+datastr.DocxTemplateName)
 	return []byte{}, nil
 }
 
@@ -244,7 +332,7 @@ func getzaHeaderAndTable(bstr []byte) (zaHeaderAndTable, error) {
 	var v zaHeaderAndTable
 	err := json.Unmarshal(bstr, &v)
 	if err != nil {
-		log.Printf("%s\n%s\n", "Error: can't use your json.", err)
+		logfile.Printf("%s\n%s\n", "Error: can't use your json.", err)
 		return v, err
 
 	}
@@ -305,4 +393,42 @@ func addRowWithCellsAndFillTexts(tab *document.Table, totalcells int, sliceofmap
 		}
 
 	}
+}
+
+func runHTTP(bindAddressPort string) error {
+	var hand http.HandlerFunc = handlerhttp
+	//starts serving
+	err := http.ListenAndServe(bindAddressPort, hand)
+	return err
+
+}
+
+// works with Windows Service Control Manager
+
+// Tservice represents my service and has a method Execute
+type Tservice struct {
+	currentConfig serviceConfig
+}
+
+// Execute responds to SCM
+func (s *Tservice) Execute(args []string, changerequest <-chan svc.ChangeRequest, updatestatus chan<- svc.Status) (ssec bool, errno uint32) {
+	updatestatus <- svc.Status{State: svc.StartPending}
+
+	//go runHTTP(s.currentConfig.bindAddressPort)
+
+	supports := svc.AcceptStop | svc.AcceptShutdown
+
+	updatestatus <- svc.Status{State: svc.Running, Accepts: supports}
+	// select has no default and wait indefinitly
+	select {
+	case c := <-changerequest:
+		switch c.Cmd {
+		case svc.Stop, svc.Shutdown:
+			goto stoped
+		case svc.Interrogate:
+
+		}
+	}
+stoped:
+	return false, 0
 }
