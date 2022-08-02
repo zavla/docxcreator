@@ -1,0 +1,8 @@
+// to debug run
+// curl.exe -T .\ex1.txt --url http://127.0.0.1:8080/docxcreator --verbose --output .\out2.docx
+
+// to create a service
+// New-Service -Name docxcreator -BinaryPathName F:\Zavla_VB\go\src\INVENTY\INVENTAR\INVENTAR.exe -Description "creats docx documents" -StartupType Manual
+
+// to run a service, example
+// .\INVENTAR.exe --PathToTemplates ".\" --bindAddressPort 192.168.3.53:8080 --logfile ".\log53.txt"
