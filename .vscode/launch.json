@@ -11,7 +11,13 @@
             "mode": "auto",
             "program": "${fileDirname}",
             "env": {},
-            "args": ["--PathToTemplates","${workspaceFolder}\\templates\\", "--input", "${workspaceFolder}\\testdata\\пример_Input_JSON.json" ]
+            "args": ["--PathToTemplates","${workspaceFolder}\\templates\\", "--input", "${workspaceFolder}\\testdata\\example_Input_JSON.json" ]
+        },
+        {
+            "name": "attach",
+            "type": "go",
+            "request": "attach",
+            "processId": 6200
         }
     ]
 }

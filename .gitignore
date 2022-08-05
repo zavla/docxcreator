@@ -1,5 +1,4 @@
 vendor/
 templates/
-testdata/
 *.exe
-outfile.docx
+outfile.docx*

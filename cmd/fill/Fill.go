@@ -33,7 +33,7 @@ import (
 	"golang.org/x/sys/windows/svc/eventlog"
 )
 
-// input we expecting as json
+// input we expect as json
 type input struct {
 	// name of docx document used as template
 	DocxTemplateName string
@@ -51,117 +51,130 @@ type serviceConfig struct {
 	bindAddressPort string
 }
 
-// error response struct, returned by service as json
+// responsestruct is returned by this http service as JSON
 type responseStruct struct {
-	Error   string
+	Status  string
+	Message string
 	Data    []byte
-	StrData string
 }
+
+// func (r responseStruct) MarshalJSON() ([]byte, error) {
+// 	sb := strings.Builder{}
+// 	sb.WriteString("{")
+
+// 	sb.WriteString("\"status\":\"")
+// 	sb.WriteString(r.Status)
+// 	sb.WriteString("\",")
+
+// 	sb.WriteString("\"message\":\"")
+// 	sb.WriteString(strings.ReplaceAll(r.Message, "\"", "\\\""))
+// 	sb.WriteString("\",")
+
+// 	enc := json.NewEncoder(&sb)
+// 	sb.WriteString("\n\"Data\":")
+// 	enc.Encode(r.Data)
+
+// 	sb.WriteString("}")
+// 	s := sb.String()
+// 	logfile.Print(s, "\n")
+// 	return []byte(s), nil
+// }
 
 var currentConfig serviceConfig
 var logfile *log.Logger
 var elog *eventlog.Log
+var errSomeInfo error = errors.New("info")
 
 const (
 	thisServiceName = "docxcreator"
+
+	// a kind of default value for the MergeFields in document that are not set by user input
 	constUnderscore = "___________"
 )
 
-// jsons the error message
-func makeresponse(rerr string, StrData string, Data []byte) []byte {
+// make a JSON for the error
+func makeresponse(statusString, message string, Data []byte) []byte {
+
 	resp := &responseStruct{
-		Error:   rerr,
-		StrData: StrData,
+		Status:  statusString,
+		Message: message,
 		Data:    Data,
 	}
 	b, err := json.Marshal(&resp)
 	if err != nil {
-		logfile.Printf("%s", err)
+		const op = "makeresponse"
+		logfile.Printf("in %s, %s", op, err)
 	}
 	return b
 }
 
+// START
 func main() {
 
 	// when starts as a service PathToTemplates should not contain `\"`
 	// because \" breaks the flag.Parse()
-	fset := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
-
-	pathToTemplates := fset.String("PathToTemplates", "", "path to templates files. Template name expected in incoming json.")
-	jsonFileName := fset.String("input", "", `file with JSON data, utf-8. Used in CLI mode.`)
-
-	bindAddressPort := fset.String("bindAddressPort", "127.0.0.1:8080", "bind service to address and port. Used in service mode.")
-
-	logfilename := fset.String("logfile", "", "path and name to service log file. Used in service mode.")
+	fset, pathToTemplates, inputJSON, bindAddressPort, logfilename := defineParameters()
 
 	fset.Parse(os.Args[1:])
 
 	isInteractive, err := svc.IsAnInteractiveSession()
 	if err != nil {
-		//log.Fatalf("%s", err)
+		log.Fatalf("%s", err)
 	}
-	if !isInteractive { //starts as a service
+
+	if !isInteractive { //starts as a service by Windows Service Control Mngr
 
 		err := eventlog.InstallAsEventCreate(thisServiceName, eventlog.Info|eventlog.Error)
 		if err != nil {
-			log.Printf("%s\n%s\n", err, "can't InstallAsEventCreate ...")
+			log.Fatalf("%s\n%s\n", err, "can't InstallAsEventCreate ...")
 		}
+
 		elog, err = eventlog.Open(thisServiceName)
 		if err != nil {
-			log.Printf("%s\n%s\n", err, "started without event log...")
+			log.Fatalf("%s\n%s\n", err, "can't open the event log...")
 		}
 		defer elog.Close()
+
 		elog.Info(1, "service "+thisServiceName+" is starting...")
 
-		if *logfilename == "" {
-			errstr := "parameter logfile is empty"
+		// start as a service requires a log file name
+		if err := checkpath(logfilename, true); err != nil {
 
-			bwriter := bytes.NewBuffer(make([]byte, 0, 200))
-			fset.SetOutput(bwriter)
-
-			fmt.Fprintf(bwriter, "%s\n", errstr)
-			fset.Usage()
+			bwriter := bytes.NewBuffer(make([]byte, 0, 500))
+			fset.SetOutput(bwriter) // a windows service has no terminal to write to
+			bwriter.WriteString(err.Error())
+			bwriter.WriteRune('\n')
+			fset.Usage() // help message to the windows event log
 			elog.Info(1, bwriter.String())
-			log.Fatalf("%s\n", errstr)
+			log.Fatalf("%s\n", err.Error())
 		}
 
 	}
 
-	logfilenamefull := ""
-	flog := os.Stdout
-	if *logfilename != "" {
-		logfilenamefull, err := filepath.Abs(*logfilename)
-		if err != nil {
-			log.Fatalf("%s\n", "bad log file name")
-		}
-		*pathToTemplates, err = filepath.Abs(*pathToTemplates)
-		if err != nil {
-			log.Fatalf("%s\n", *pathToTemplates, err)
-		}
+	// default log to the stdout if its ran as a CLI
 
-		// begin log
-		flog, err = os.OpenFile(logfilenamefull, os.O_RDWR|os.O_CREATE, 0660)
-		if err != nil {
-			if !isInteractive {
-				elog.Info(1, "service "+thisServiceName+" could not open its log file: "+(logfilenamefull))
-			}
-			log.Fatalf("%s\n%s\n", "Error: can't create log file: "+(logfilenamefull), err)
+	flog, err := setupLogfile(logfilename)
+	if err != nil {
+		log.Fatalf("can't create log file, %s, %s\n", *logfilename, err)
+		if !isInteractive {
+			elog.Info(1, "service "+thisServiceName+" could not open its log file: "+(*logfilename))
 		}
 	}
+	defer flog.Close()
 
 	logfile = log.New(flog, "", log.Ldate|log.Ltime)
-	logfile.Printf("%s", "in main() ...")
+
 	if !isInteractive {
-		elog.Info(1, "service "+thisServiceName+" started a log file: "+(logfilenamefull))
+		elog.Info(1, "service "+thisServiceName+" started a log file: "+(*logfilename))
 	}
 	// logfile is ready
 
-	if *pathToTemplates == "" {
+	if err := checkpath(pathToTemplates, true); err != nil {
 		fset.Usage()
 		if !isInteractive {
 			elog.Info(1, "service "+thisServiceName+" needs parameter pathToTemplates")
 		}
-		logfile.Fatalf("%s\n", "Error: PathToTemplates - path to a folder with docx templates needed.")
+		logfile.Fatalf("parameter PathToTemplates is expected, %s\n", err)
 	}
 
 	// global var
@@ -171,13 +184,14 @@ func main() {
 		bindAddressPort: *bindAddressPort,
 	}
 
-	if *jsonFileName == "" { //starts as a service, uses http
+	if *inputJSON == "" { //started as a windows service or as a CLI http server
 
-		if isInteractive { // ran by user
+		if isInteractive { // by user from terminal
+			logfile.Println("http server has started")
 			err = runHTTP(currentConfig.bindAddressPort)
-			fmt.Printf("%s, %s\n", "Http server Exited:", err)
+			logfile.Printf("Http server Exited: %s\n", err)
 
-		} else { // ran by a services manager
+		} else { // by a windows services manager
 
 			// runs server on other goroutine
 			go runHTTP(currentConfig.bindAddressPort)
@@ -192,21 +206,28 @@ func main() {
 			}
 		}
 
-	} else { //command line mode, expecting file as an input
+	}
+	// here we are only if user starts us as CLI with an input specified as a file
+	{
+		//command line mode, expecting file as an input
 
 		// open, read, validate
-		f, err := os.Open(*jsonFileName)
+		f, err := os.Open(*inputJSON)
 		if err != nil {
 			logfile.Println(helpText())
 			logfile.Fatalf("%s\n%s\n", "Error: can't open json file with input.", err)
 		}
+		defer f.Close()
+
 		databytes, err := ioutil.ReadAll(f)
 		if err != nil {
 			logfile.Fatalf("%s\n%s\n", "Can't read input file.", err)
 		}
+
 		inputStru, err := validate_input(databytes)
 		if err != nil {
-			logfile.Fatalln(err)
+			logfile.Println(err)
+			logfile.Fatalln(helpText())
 		}
 
 		outputfile := "outfile.docx" //fixed output docx file name
@@ -221,8 +242,9 @@ func main() {
 			logfile.Fatalf("error: can't output to the file %s, %s", newfilefullpath, err)
 			os.Exit(1)
 		}
+		defer outfile.Close()
 
-		info, err := CreateDocxFromStruct(outfile, inputStru, *pathToTemplates)
+		info, err := Createdocx(outfile, inputStru, *pathToTemplates)
 		if err != nil {
 			logfile.Printf("%s, %s\n", err, string(info))
 			os.Exit(1)
@@ -230,6 +252,31 @@ func main() {
 		logfile.Printf("OK: %s\n", newfilefullpath)
 	}
 
+}
+
+func checkpath(pathToTemplates *string, required bool) error {
+	if required && *pathToTemplates == "" {
+		return errors.New("empty")
+	}
+	// it is always required to Abs the user input
+	abspathToTemplates, err := filepath.Abs(*pathToTemplates)
+	if err != nil {
+		return errors.New("path error")
+	}
+	pathToTemplates = &abspathToTemplates
+	return nil
+}
+
+func defineParameters() (*flag.FlagSet, *string, *string, *string, *string) {
+	fset := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
+
+	pathToTemplates := fset.String("PathToTemplates", "", "path to templates files. Template name expected in incoming json.")
+	jsonFileName := fset.String("input", "", `file with JSON data, utf-8. Used in CLI mode.`)
+
+	bindAddressPort := fset.String("bindAddressPort", "127.0.0.1:8080", "bind service to address and port. Used in service mode.")
+
+	logfilename := fset.String("logfile", "", "path and name to service log file. Used in service mode.")
+	return fset, pathToTemplates, jsonFileName, bindAddressPort, logfilename
 }
 
 func backupAfile(name string) error {
@@ -245,7 +292,7 @@ func backupAfile(name string) error {
 		}
 		//file exists
 		newname = name + ".bak" + strconv.Itoa(i)
-
+		i++
 	}
 	var err error
 	if err = os.Rename(name, newname); err != nil {
@@ -255,55 +302,78 @@ func backupAfile(name string) error {
 }
 
 func handlerhttp(w http.ResponseWriter, r *http.Request) {
-	//action(w, )
-	if r.URL.Path == "/docxcreator" {
-		if r.Method == "GET" {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write(makeresponse(fmt.Sprintf("%s", "POST should be used."), "", []byte{}))
-			return
-		}
-		rdr := r.Body
-		defer rdr.Close()
 
-		// the action on /docxcreator url writes into w by itself or returns []byte with info.
-		// everything comes in in JSON body.
-		info, err := action(w, rdr)
-
-		if err != nil {
-			logfile.Printf("%s", err)
-			// serves error
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write(makeresponse(err.Error(), string(info), []byte{}))
-		}
-
+	if r.Method != "POST" || !strings.HasPrefix(r.URL.Path, "/docxcreator") {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write(makeresponse("error", "A POST method must be used to the /docxcreator endpoint", []byte{}))
+		return
 	}
+	rdr := r.Body
+	defer rdr.Close()
+
+	// the action on /docxcreator url writes into w io.Writer by itself or returns info.
+	// everything comes in in JSON body.
+	info, err := action(w, rdr)
+
+	switch err {
+	case errSomeInfo:
+		w.WriteHeader(http.StatusAccepted)
+		w.Write(makeresponse("OK", info, nil))
+		return
+	case nil:
+		//OK
+		//response body was filled with bytes of returned file
+		return
+	}
+
+	w.WriteHeader(http.StatusBadRequest)
+	// err goes to a log
+	logfile.Printf("%s", err)
+	// info goes to user
+	w.Write(makeresponse("error", info, nil))
+	return
+
 }
 
-func action(w io.Writer, toreadbytes io.ReadCloser) ([]byte, error) {
+func action(w io.Writer, toreadbytes io.ReadCloser) (infoforUser string, err error) {
+	const op = "action"
 
 	var inputBody []byte // data read from request body
-	inputBody, err := ioutil.ReadAll(toreadbytes)
+	inputBody, err = ioutil.ReadAll(toreadbytes)
 	if err != nil {
-		logfile.Printf("%s", err)
+		var errCode string = "UnableToProcessRequest" //the declaration of errCode must be in this form
 
-		return []byte{}, err //this error goes to clients
+		logfile.Printf("errCode=%s, %s", errCode, err)
+
+		return fmt.Sprintf("Server was unable to process your request, errCode=%s", errCode), err
 	}
 
 	inputStru, err := validate_input(inputBody)
 	if err != nil {
-		return []byte{}, err //this error goes to clients
+		var errCode string = "InputValidationError"
+		// do not log every validation error
+		return fmt.Sprintf("Your input JSON doesn't pass validation, errCode=%s, %s, %s", errCode, err, helpText()), err //this error goes to clients
 	}
 
-	// CreateDocxFromStruct creates docx files and writes them into w.
-	info, err := CreateDocxFromStruct(w, inputStru, currentConfig.pathToTemplates)
-	if err != nil {
-		// may be an information message from CreateDocxFromStruct if showFileds parameter
-		logfile.Printf("error: failed to create %s, %s\n", inputStru.DocxTemplateName, err)
-		return info, err
+	// Createdocx creates docx files and writes them into w.
+	info, err := Createdocx(w, inputStru, currentConfig.pathToTemplates)
+
+	switch {
+	case errors.Is(err, errSomeInfo):
+		//have some information for the user, not an error
+		return string(info), err
+	case err != nil:
+		logfile.Printf("failed to create %s, %s\n", inputStru.DocxTemplateName, err)
+		var errCode string = "CantCreateDocx"
+		//user gets an errCode and general message
+		return fmt.Sprintf("Server encountered an error while creating a document, errCode=%s, %s", errCode, info), err
+
 	}
+
 	logfile.Printf("successfully created %s\n", inputStru.DocxTemplateName)
-	return []byte{}, nil
+	return string(info), nil
 }
+
 func getDocumentPtrFromTemplate(templatename, pathToTemplates string) (*document.Document, error) {
 	//opens template
 	fullPathToTemplate := filepath.Join(pathToTemplates, templatename)
@@ -327,22 +397,17 @@ func alltemplates() ([]fs.DirEntry, error) {
 
 func helpText() string {
 	sb := strings.Builder{}
-	sb.WriteString(`Help message: a service expects a JSON input in the following form
-	{
-		"DocxTemplateName": "youtemplatenamehere.docx",         //nonempty - a document template name
-		"ShowFields": false, 									//help if you need a list of available MergeFields in document template
+	const exampleJson = `{
+		"DocxTemplateName": "youtemplatenamehere.docx",
+		"ShowFields": false,
 		"Header": {
-			"Номер": "ЮХ000000084",								// these are MergeFields in the document template
-			"Дата": "19.08.2021 11:31:20",                      // they are shown as example
-			"КлиентПолноеНаименование": "?",
-			"МестоСоставления": "?",
-			"НомерДоговора": "?",
-			"ДатаДоговора": "?",
+			"Номер": "ЮХ000000084",
+			"Дата": "19.08.2021 11:31:20",
+			"НомерДоговора": "123",
 			"ИтогоСумма": "645,26"
 		},
 		"Table1": [
 			{
-				// text 1, 2 ... in columns in you template document are just text, not MergeFields, in any row of any table in the document template
 				"1": "1",
 				"2": "Ремкомплект MM для редуктора СО2 Premium",
 				"3": "шт",
@@ -350,18 +415,31 @@ func helpText() string {
 				"5": "322,63",
 				"6": "645,26"
 			}
-            // you may specify more rows as an input
 		]
+	}`
+	sb.WriteString(`Help message. A service expects a JSON input in the following form:
+`)
+
+	bb := bytes.NewBuffer(make([]byte, 0, len(exampleJson)))
+	if err := json.Compact(bb, []byte(exampleJson)); err != nil {
+		logfile.Printf("json.Compact returned error, %s", err)
 	}
-	You must specify DocxTemplateName.
-	You may use the following DocxTemplateName values:
-	`)
+	sb.Write(bb.Bytes())
+
+	sb.WriteString(`
+You must specify DocxTemplateName.
+You may use the following DocxTemplateName values:
+`)
 	docs, err := alltemplates()
 	if err != nil {
 		sb.WriteString("The list of available document templates was not generated due to internal error.")
 	} else {
 		for k, _ := range docs {
 			sb.WriteString(docs[k].Name())
+			sb.WriteRune('\n')
+		}
+		if len(docs) == 0 {
+			sb.WriteString("This service doesn't have any ./templates/*.docx files.")
 		}
 	}
 	return sb.String()
@@ -370,29 +448,33 @@ func helpText() string {
 func validate_input(databytes []byte) (*input, error) {
 	inputStru, err := convertIntoinput(databytes) //converts json to struct
 	if err != nil {
-		return nil, errors.New(helpText())
+		return nil, err
 	}
 
 	if inputStru.DocxTemplateName == "" {
 
-		return nil, errors.New(helpText())
+		return nil, errors.New("input JSON requires a DocxTemplateName tag")
 	}
 	return &inputStru, nil
 }
 
-// CreateDocxFromStruct creates docx document through gooxml, fills MergeFields with data from input JSON
+// Createdocx creates docx document through gooxml, fills MergeFields with data from input JSON
 // and adds rows into tables in docx document. Tables are searched by the row content: text "1" "2" in first
 // two cells.
-// Rows of Tables are filled from databytes which are json utf8 encoded struct "input".
-func CreateDocxFromStruct(w io.Writer, inputStru *input, pathToTemplates string) ([]byte, error) {
+// New rows are filled from struct "input".
+func Createdocx(w io.Writer, inputStru *input, pathToTemplates string) (infoUser []byte, err error) {
+	const op = "Createdocx"
 
 	doc, err := getDocumentPtrFromTemplate(inputStru.DocxTemplateName, pathToTemplates)
 	if err != nil {
-		logfile.Printf("error: failed to get Document from template %s, %s\n", inputStru.DocxTemplateName, err)
-		return nil, err
+		var errCode string = "BadTemplate"
+		err2 := fmt.Errorf("%s, template %s, errCode=%s, %w\n", op, inputStru.DocxTemplateName, errCode, err)
+		logfile.Println(err2)
+		return []byte(fmt.Sprintf("Server was unable to open your template %s", inputStru.DocxTemplateName)),
+			err2
 	}
 
-	const specialMergeFields = "0123456789101112131415161718192021222324252627282930"
+	const convertMergeFieldsIntoText = "0123456789101112131415161718192021222324252627282930"
 	helpmessage := make([]string, 0, 20)
 	// first, merge fields from template documet will be filled with predefined value "__________"
 	for _, v := range doc.MergeFields() {
@@ -400,21 +482,20 @@ func CreateDocxFromStruct(w io.Writer, inputStru *input, pathToTemplates string)
 		if inputStru.ShowFields {
 			helpmessage = append(helpmessage, v)
 		}
-		if strings.Contains(specialMergeFields, v) {
+		if strings.Contains(convertMergeFieldsIntoText, v) {
 			// if user made MergeFields in template with names like 1,2,3 ...
 			// replace this merge fields with just text 1,2,3...
 			inputStru.Header[v] = v
 		}
-
 		if _, has := inputStru.Header[v]; !has {
-			// if user doesn't supply a value for the mergefield we will make it more visible
+			// if user doesn't supply a value for the mergefield  will make it more visible
 			// with default value for it
 			inputStru.Header[v] = constUnderscore
 		}
 	}
 	if inputStru.ShowFields { // client requested help for available MergeFields
 		sort.Strings(helpmessage)
-		return []byte(strings.Join(helpmessage, "; ")), errors.New("list of available MergeFields in document")
+		return []byte(strings.Join(helpmessage, ";\n")), errSomeInfo
 	}
 
 	doc.MailMerge(inputStru.Header) // inserts values into the document by MailMerge
@@ -424,9 +505,11 @@ func CreateDocxFromStruct(w io.Writer, inputStru *input, pathToTemplates string)
 		// searches the table by row content "1 2 3 4 5"
 		var tabfound bool
 		var tabindex int
-		var totalcells int // how many cells are in fact in the table in the document template
+		var totalcells int      // how many cells are in fact in the table in the document template
+		var insrow document.Row //a row where to insert new rows
+		var insrowIndex int
 
-		tabfound, tabindex, totalcells = findOurTable(doc) // searches the table
+		tabfound, tabindex, insrow, totalcells, insrowIndex = findOurTable(doc) // searches the table
 
 		if !tabfound {
 			err := errors.New("template file doesn't have a Table object with a row with 1,2,3 values in its cells.")
@@ -435,9 +518,11 @@ func CreateDocxFromStruct(w io.Writer, inputStru *input, pathToTemplates string)
 		}
 		tab := doc.Tables()[tabindex]
 
-		//why? tab.Properties().SetStyle("TableGridZa") // I use style "TableGridZa"
+		insertnewRows(&tab, insrow, insrowIndex, totalcells, inputStru.Table1)
 
-		addRowWithCellsAndFillTexts(&tab, totalcells, inputStru.Table1) // adding rows
+		// remove the row after which we have inserted new rows
+		tabWithRemove := TableWithDelete{&tab}
+		tabWithRemove.RemoveRow(insrow)
 	}
 
 	// saves new dowcument into io.Writer
@@ -464,17 +549,19 @@ func convertIntoinput(bstr []byte) (input, error) {
 }
 
 // findOurTable seeks the table with the row with cells with text "1 2 3 4 5"
-func findOurTable(doc *document.Document) (bool, int, int) {
+func findOurTable(doc *document.Document) (bool, int, document.Row, int, int) {
 
 	var tabfound bool
 	var tabindex int
-	var totalcells int // actual number of cells in the row
+	var retrow document.Row // a row that we have found
+	var totalcells int      // actual number of cells in the row
+	var retrowIndex int     //index of the row that we have found
 
 	tables := doc.Tables()
 	for i, tab := range tables {
 
 		rows := tab.Rows()
-		for _, row := range rows {
+		for ri, row := range rows {
 			if len(row.Cells()) < 2 {
 				continue
 			}
@@ -492,16 +579,19 @@ func findOurTable(doc *document.Document) (bool, int, int) {
 				tabfound = true
 				tabindex = i
 				totalcells = len(row.Cells()) // how many cells may be passed into the row
-				break
+				retrow = row
+				retrowIndex = ri
+				goto wayout
 			}
 		}
 
 	}
-	return tabfound, tabindex, totalcells
+wayout:
+	return tabfound, tabindex, retrow, totalcells, retrowIndex
 
 }
 
-// we add a new method to an external package type Table
+// I add a new method to an external package type Table
 type TableWithDelete struct {
 	*document.Table
 }
@@ -511,27 +601,40 @@ func (t *TableWithDelete) RemoveRow(r document.Row) {
 	for i, rc := range t.X().EG_ContentRowContent {
 
 		if len(rc.Tr) > 0 && r.X() == rc.Tr[0] {
-
-			copy(t.X().EG_ContentRowContent[i:], t.X().EG_ContentRowContent[i+1:])
+			if i+1 < len(t.X().EG_ContentRowContent) {
+				copy(t.X().EG_ContentRowContent[i:], t.X().EG_ContentRowContent[i+1:])
+			}
 			t.X().EG_ContentRowContent = t.X().EG_ContentRowContent[:len(t.X().EG_ContentRowContent)-1]
+			break
 		}
 	}
 }
 
-// addRowWithCellsAndFillTexts adds rows into tab from slice or rows (maps)
-func addRowWithCellsAndFillTexts(tab *document.Table, totalcells int, sliceofmaps []map[int]string) {
-	for _, datamap := range sliceofmaps {
+// insertnewRows adds rows into tab from slice or rows (maps)
+func insertnewRows(tab *document.Table, startrow document.Row, startRowIndex int, countcells int, newrows []map[int]string) {
+	currow := startrow
+	lastrow := false
+	if len(tab.X().EG_ContentRowContent) == startRowIndex+1 {
+		// this is the last row in the table
+		lastrow = true
+	}
+	for _, datamap := range newrows {
+		var nrow document.Row
+		if lastrow {
+			nrow = tab.AddRow() // faster then InsertRowAfter
 
-		nrow := tab.AddRow()
-		for nc := 1; nc <= totalcells; nc++ {
+		} else {
+			nrow = tab.InsertRowAfter(currow)
+		}
+		currow = nrow
+		for nc := 1; nc <= countcells; nc++ {
 
 			ncell := nrow.AddCell()
 			npar := ncell.AddParagraph()
 
 			nrun := npar.AddRun()
-			nrun.AddText(datamap[nc]) // nc is a column number passed in incoming json
+			nrun.AddText(datamap[nc]) // nc is 1,2, a column number passed in incoming json
 		}
-
 	}
 }
 
@@ -543,34 +646,21 @@ func runHTTP(bindAddressPort string) error {
 
 }
 
-// works with Windows Service Control Manager
+func setupLogfile(logfilename *string) (*os.File, error) {
+	flog := os.Stdout
+	if *logfilename != "" {
+		logfilenamefull, err := filepath.Abs(*logfilename)
+		if err != nil {
+			return flog, fmt.Errorf("bad log file name, %w\n", err)
+		}
 
-// Tservice represents my service and has a method Execute
-type Tservice struct {
-	currentConfig serviceConfig
-}
-
-// Execute responds to SCM
-func (s *Tservice) Execute(args []string, changerequest <-chan svc.ChangeRequest, updatestatus chan<- svc.Status) (ssec bool, errno uint32) {
-	updatestatus <- svc.Status{State: svc.StartPending}
-
-	//go runHTTP(s.currentConfig.bindAddressPort)
-
-	supports := svc.AcceptStop | svc.AcceptShutdown
-
-	updatestatus <- svc.Status{State: svc.Running, Accepts: supports}
-	// select has no default and wait indefinitly
-	select {
-	case c := <-changerequest:
-		switch c.Cmd {
-		case svc.Stop, svc.Shutdown:
-			goto stoped
-		case svc.Interrogate:
-
+		// begin log
+		flog, err = os.OpenFile(logfilenamefull, os.O_RDWR|os.O_CREATE, 0660)
+		if err != nil {
+			return flog, fmt.Errorf("can't create log file, %s, %w\n", logfilenamefull, err)
 		}
 	}
-stoped:
-	return false, 0
+	return flog, nil
 }
 
 // When Word saves a document, it removes all unused styles.  This means to

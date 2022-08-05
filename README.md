@@ -1,33 +1,37 @@
-# Docxcreator is an http service that creates docx documents from your docx templates. #
+# Docxcreator - creates docx documents with supplied data from your docx templates. #
 
-May be started as a Windows service.
-Has 'template' directory with docx templates.
+Merges user supplied data into the document using Word MergeFields.
 
-Merges user supplied data using MergeFields.
-Adds rows to a table data in a document.
-Data is recieved with POST method, expects a json.
+And also adds rows to any table in a document.
+
+The 'template' directory holds your docx files used as your templates for new documents.
+
+Tables in a template is searched by the presence of text "1" "2" in its first two cells. The row that contains this text will be replaced with the user's JSON input data. Rows are added for every input JSON array element.
 
 Uses "baliance.com/gooxml/document".
-Writes into Windows event log and as on option to a dedicated log file.
 
 
+Example of POST request:
 ```
-Help message: a service expects a JSON input in the following form
+curl.exe  --data '@./testdata/пример_Input_JSON.json' --output ./testdata/output.docx  http://127.0.0.1:8080/docxcreator
+```
+
+Example of input JSON:
+```
 	{
-		"DocxTemplateName": "youtemplatenamehere.docx",         //nonempty - a document template name
-		"ShowFields": false, 									//help if you need a list of available MergeFields in document template
+		"DocxTemplateName": "yourTemplateFile.docx",
+		"ShowFields": false,
 		"Header": {
-			"Номер": "ЮХ000000084",								// these are MergeFields in the document template
-			"Дата": "19.08.2021 11:31:20",                      // they are shown as example
-			"КонтрагентПолноеНаименование": "?",
-			"МестоСоставления": "?",
-			"НомерДоговора": "?",
-			"ДатаДоговора": "?",
+			"Номер": "ЮХ000000084",
+			"Дата": "19.08.2021 11:31:20",
+			"КлиентПолноеНаименование": "",
+			"МестоСоставления": "",
+			"НомерДоговора": "",
+			"ДатаДоговора": "",
 			"ИтогоСумма": "645,26"
 		},
 		"Table1": [
 			{
-				// text 1, 2 ... in columns in you template document are just text, not MergeFields, in any row of any table in the document template
 				"1": "1",
 				"2": "Ремкомплект MM для редуктора СО2 Premium",
 				"3": "шт",
@@ -35,11 +39,12 @@ Help message: a service expects a JSON input in the following form
 				"5": "322,63",
 				"6": "645,26"
 			}
-            // you may specify more rows as an input
 		]
 	}
-	You must specify DocxTemplateName.
-	You may use the following DocxTemplateName values:
-	```
+```
 
-May be run as standalone executable in command line mode.
+May be started as a Windows service. Data is recieved with POST method as a JSON.
+
+Logs into Windows event log and as an option to a dedicated log file.
+
+Also it may be run as standalone executable in CLI mode.
