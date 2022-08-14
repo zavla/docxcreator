@@ -30,6 +30,7 @@ import (
 
 	"baliance.com/gooxml/document"
 	"golang.org/x/sys/windows/svc"
+	"golang.org/x/sys/windows/svc/debug"
 	"golang.org/x/sys/windows/svc/eventlog"
 )
 
@@ -82,7 +83,7 @@ type responseStruct struct {
 
 var currentConfig serviceConfig
 var logfile *log.Logger
-var elog *eventlog.Log
+var elog debug.Log
 var errSomeInfo error = errors.New("info")
 
 const (
@@ -108,73 +109,96 @@ func makeresponse(statusString, message string, Data []byte) []byte {
 	return b
 }
 
-// START
-func main() {
-
-	// when starts as a service PathToTemplates should not contain `\"`
-	// because \" breaks the flag.Parse()
-	fset, pathToTemplates, inputJSON, bindAddressPort, logfilename := defineParameters()
-
-	fset.Parse(os.Args[1:])
-
-	isInteractive, err := svc.IsAnInteractiveSession()
-	if err != nil {
-		log.Fatalf("%s", err)
-	}
-
-	if !isInteractive { //starts as a service by Windows Service Control Mngr
-
-		err := eventlog.InstallAsEventCreate(thisServiceName, eventlog.Info|eventlog.Error)
-		if err != nil {
-			log.Fatalf("%s\n%s\n", err, "can't InstallAsEventCreate ...")
-		}
-
+func mustSetupEventlog(isInteractive bool) (elog debug.Log) {
+	var err error
+	if !isInteractive {
+		// starts as a service by Windows Service Control Mngr
+		// SETUP EVENT LOG
 		elog, err = eventlog.Open(thisServiceName)
 		if err != nil {
-			log.Fatalf("%s\n%s\n", err, "can't open the event log...")
+			msg := fmt.Sprintf("can't open the event log, %s", err)
+			L(isInteractive, log.Default(), nil, msg)
+			os.Exit(1)
 		}
-		defer elog.Close()
 
-		elog.Info(1, "service "+thisServiceName+" is starting...")
+	} else {
+		// elog to the Console
+		elog = debug.New(thisServiceName)
+	}
+	return elog
+}
 
-		// start as a service requires a log file name
+//multi logger
+func L(isInteractive bool, file *log.Logger, event debug.Log, msg string) {
+	if file != nil {
+		file.Println(msg) //into file or std
+	}
+	if !isInteractive && event != nil {
+		event.Info(1, msg) // into windows events
+	}
+}
+
+// START
+func main() {
+	var elog debug.Log // let elog be an interface
+	var err error
+	var msg string
+	fset, pathToTemplates, inputJSON, bindAddressPort, logfilename, isdebug := defineParameters()
+
+	isService, err := svc.IsWindowsService()
+	isInteractive := !isService
+
+	elog = mustSetupEventlog(isInteractive)
+	defer elog.Close()
+
+	errArgs := fset.Parse(os.Args[1:])
+	if errArgs != nil {
+		msg := fmt.Sprintf("Error at parsing command line flags: %s", errArgs)
+		L(isInteractive, log.Default(), elog, msg)
+		os.Exit(1)
+	}
+
+	msg = fmt.Sprintf("arguments Parsed=%v", fset.Parsed())
+	L(isInteractive, log.Default(), elog, msg)
+
+	if *isdebug {
+		isInteractive = false
+	}
+
+	if !isInteractive {
+		//require a logfile
 		if err := checkpath(logfilename, true); err != nil {
+			msg := fmt.Sprintf("Error in log file name %s, %s", *logfilename, err)
 
-			bwriter := bytes.NewBuffer(make([]byte, 0, 500))
-			fset.SetOutput(bwriter) // a windows service has no terminal to write to
-			bwriter.WriteString(err.Error())
-			bwriter.WriteRune('\n')
-			fset.Usage() // help message to the windows event log
-			elog.Info(1, bwriter.String())
-			log.Fatalf("%s\n", err.Error())
+			L(isInteractive, log.Default(), elog, msg)
+			os.Exit(1)
 		}
-
 	}
 
 	// default log to the stdout if its ran as a CLI
-
 	flog, err := setupLogfile(logfilename)
 	if err != nil {
-		log.Fatalf("can't create log file, %s, %s\n", *logfilename, err)
-		if !isInteractive {
-			elog.Info(1, "service "+thisServiceName+" could not open its log file: "+(*logfilename))
-		}
+		msg := fmt.Sprintf("Can't open the log file %s, %s", *logfilename, err)
+		L(isInteractive, log.Default(), elog, msg)
+
+		os.Exit(1)
 	}
 	defer flog.Close()
 
+	//NEW LOGGER
 	logfile = log.New(flog, "", log.Ldate|log.Ltime)
 
-	if !isInteractive {
-		elog.Info(1, "service "+thisServiceName+" started a log file: "+(*logfilename))
+	if *logfilename != "" {
+		msg = fmt.Sprintf("started a log file %s", *logfilename)
+		L(isInteractive, log.Default(), elog, msg)
 	}
-	// logfile is ready
+	// here logfile is ready to use
 
 	if err := checkpath(pathToTemplates, true); err != nil {
 		fset.Usage()
-		if !isInteractive {
-			elog.Info(1, "service "+thisServiceName+" needs parameter pathToTemplates")
-		}
-		logfile.Fatalf("parameter PathToTemplates is expected, %s\n", err)
+		msg := fmt.Sprintf("parameter PathToTemplates is required, %s", err)
+		L(isInteractive, logfile, elog, msg)
+		os.Exit(1)
 	}
 
 	// global var
@@ -184,90 +208,133 @@ func main() {
 		bindAddressPort: *bindAddressPort,
 	}
 
-	if *inputJSON == "" { //started as a windows service or as a CLI http server
+	if *inputJSON == "" { //no input, means we are started as a windows service or as a CLI http server
+		msg := fmt.Sprintf("http server %s has started", currentConfig.bindAddressPort)
+		L(isInteractive, logfile, elog, msg)
 
 		if isInteractive { // by user from terminal
-			logfile.Println("http server has started")
+
 			err = runHTTP(currentConfig.bindAddressPort)
-			logfile.Printf("Http server Exited: %s\n", err)
+
+			msg = fmt.Sprintf("http server %s has exited: %s", currentConfig.bindAddressPort, err)
+			L(isInteractive, logfile, elog, msg)
 
 		} else { // by a windows services manager
 
-			// runs server on other goroutine
-			go runHTTP(currentConfig.bindAddressPort)
+			go func() {
+				// runs server on other goroutine
+				err := runHTTP(currentConfig.bindAddressPort)
 
-			// runs SCM responder on other goroutine
-			err := svc.Run(thisServiceName, &Tservice{currentConfig: currentConfig})
+				msg = fmt.Sprintf("http server %s has exited: %s", currentConfig.bindAddressPort, err)
+				L(isInteractive, logfile, elog, msg)
 
-			logfile.Printf("%s\n", "service "+thisServiceName+" exited.")
-			if err != nil {
-				logfile.Printf("%s %s\n", "service "+thisServiceName+" exited with error: ", err)
-				log.Fatalf("%s", err)
+			}()
+
+			mockrun := svc.Run
+			if *isdebug {
+				mockrun = debug.Run
 			}
+			// runs SCM responder on other goroutine
+			err := mockrun(thisServiceName, &Tservice{currentConfig: currentConfig})
+
+			msg := "normal exit"
+			if err != nil {
+				msg = fmt.Sprintf("service %s exited with error %s ", thisServiceName, err)
+				L(isInteractive, logfile, elog, msg)
+				os.Exit(1)
+			}
+			L(isInteractive, logfile, elog, msg)
+			os.Exit(0)
+			//EXIT HERE
 		}
 
 	}
+
 	// here we are only if user starts us as CLI with an input specified as a file
 	{
 		//command line mode, expecting file as an input
 
 		// open, read, validate
+		if err := checkpath(inputJSON, true); err != nil {
+			msg := fmt.Sprintf("Error in input file name %s, %s", *inputJSON, err)
+			L(isInteractive, logfile, elog, msg)
+
+			os.Exit(1)
+		}
 		f, err := os.Open(*inputJSON)
 		if err != nil {
-			logfile.Println(helpText())
-			logfile.Fatalf("%s\n%s\n", "Error: can't open json file with input.", err)
+			msg := fmt.Sprintf("Can't open input file %s, %s", *inputJSON, err)
+			L(isInteractive, logfile, elog, msg)
+
+			os.Exit(1)
 		}
 		defer f.Close()
 
 		databytes, err := ioutil.ReadAll(f)
 		if err != nil {
-			logfile.Fatalf("%s\n%s\n", "Can't read input file.", err)
+			msg := fmt.Sprintf("Can't read input file %s, %s", *inputJSON, err)
+			L(isInteractive, logfile, elog, msg)
+
+			os.Exit(1)
 		}
 
 		inputStru, err := validate_input(databytes)
 		if err != nil {
-			logfile.Println(err)
-			logfile.Fatalln(helpText())
+			msg := fmt.Sprintf("Can't validate JSON data in input file %s, %s\n Help:\n%s", *inputJSON, err, helpText())
+			L(isInteractive, logfile, elog, msg)
+
+			os.Exit(1)
 		}
 
 		outputfile := "outfile.docx" //fixed output docx file name
-		newfilefullpath := filepath.Join(".\\", outputfile)
+		outputfilefullpath := filepath.Join(".\\", outputfile)
 
-		if err := backupAfile(newfilefullpath); err != nil {
-			logfile.Println(err)
+		if err := backupAfile(outputfilefullpath); err != nil {
+			msg := fmt.Sprintf("Can't backup an output file %s, %s", outputfile, err)
+			L(isInteractive, logfile, elog, msg)
+			//continue next
 		}
 
-		outfile, err := os.OpenFile(newfilefullpath, os.O_CREATE|os.O_WRONLY, 0660)
+		outfile, err := os.OpenFile(outputfilefullpath, os.O_CREATE|os.O_WRONLY, 0660)
 		if err != nil {
-			logfile.Fatalf("error: can't output to the file %s, %s", newfilefullpath, err)
+			msg := fmt.Sprintf("Can't output to the file %s, %s", outputfilefullpath, err)
+			L(isInteractive, logfile, elog, msg)
+
 			os.Exit(1)
 		}
 		defer outfile.Close()
 
 		info, err := Createdocx(outfile, inputStru, *pathToTemplates)
 		if err != nil {
-			logfile.Printf("%s, %s\n", err, string(info))
+			msg := fmt.Sprintf("Error while creating docx %s, info %s", err, string(info))
+			L(isInteractive, logfile, elog, msg)
+
 			os.Exit(1)
 		}
-		logfile.Printf("OK: %s\n", newfilefullpath)
+		msg := fmt.Sprintf("OK: %s\n", outputfilefullpath)
+		L(isInteractive, logfile, nil, msg)
+
+		os.Exit(0)
+
 	}
 
 }
 
-func checkpath(pathToTemplates *string, required bool) error {
-	if required && *pathToTemplates == "" {
-		return errors.New("empty")
+// checkpath make filepath.Abs with the parameter and checks if its not empty
+func checkpath(filename *string, required bool) error {
+	if required && *filename == "" {
+		return errors.New("name is empty")
 	}
 	// it is always required to Abs the user input
-	abspathToTemplates, err := filepath.Abs(*pathToTemplates)
+	abspath, err := filepath.Abs(*filename)
 	if err != nil {
 		return errors.New("path error")
 	}
-	pathToTemplates = &abspathToTemplates
+	filename = &abspath
 	return nil
 }
 
-func defineParameters() (*flag.FlagSet, *string, *string, *string, *string) {
+func defineParameters() (*flag.FlagSet, *string, *string, *string, *string, *bool) {
 	fset := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 
 	pathToTemplates := fset.String("PathToTemplates", "", "path to templates files. Template name expected in incoming json.")
@@ -276,7 +343,8 @@ func defineParameters() (*flag.FlagSet, *string, *string, *string, *string) {
 	bindAddressPort := fset.String("bindAddressPort", "127.0.0.1:8080", "bind service to address and port. Used in service mode.")
 
 	logfilename := fset.String("logfile", "", "path and name to service log file. Used in service mode.")
-	return fset, pathToTemplates, jsonFileName, bindAddressPort, logfilename
+	isdebug := fset.Bool("debug", false, "mock run as a service (to debug a service mode)")
+	return fset, pathToTemplates, jsonFileName, bindAddressPort, logfilename, isdebug
 }
 
 func backupAfile(name string) error {
@@ -317,6 +385,7 @@ func handlerhttp(w http.ResponseWriter, r *http.Request) {
 
 	switch err {
 	case errSomeInfo:
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		w.Write(makeresponse("OK", info, nil))
 		return
@@ -326,9 +395,13 @@ func handlerhttp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusBadRequest)
+
 	// err goes to a log
-	logfile.Printf("%s", err)
+	msg := err.Error()
+	L(false, logfile, nil, msg)
+
 	// info goes to user
 	w.Write(makeresponse("error", info, nil))
 	return
@@ -591,7 +664,7 @@ wayout:
 
 }
 
-// I add a new method to an external package type Table
+// I add a new method RemoveRow() to an external package type document.Table
 type TableWithDelete struct {
 	*document.Table
 }

@@ -1,4 +1,6 @@
 vendor/
 templates/
+testdata/
 *.exe
 outfile.docx*
+log.txt

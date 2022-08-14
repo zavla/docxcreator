@@ -28,5 +28,6 @@ func (s *Tservice) Execute(args []string, changerequest <-chan svc.ChangeRequest
 		}
 	}
 stoped:
+	updatestatus <- svc.Status{State: svc.StopPending}
 	return false, 0
 }
