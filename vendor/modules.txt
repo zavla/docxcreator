@@ -1,0 +1,28 @@
+# baliance.com/gooxml v1.0.1
+## explicit
+baliance.com/gooxml
+baliance.com/gooxml/algo
+baliance.com/gooxml/color
+baliance.com/gooxml/common
+baliance.com/gooxml/document
+baliance.com/gooxml/measurement
+baliance.com/gooxml/schema/soo/dml
+baliance.com/gooxml/schema/soo/dml/picture
+baliance.com/gooxml/schema/soo/ofc/docPropsVTypes
+baliance.com/gooxml/schema/soo/ofc/extended_properties
+baliance.com/gooxml/schema/soo/ofc/math
+baliance.com/gooxml/schema/soo/ofc/sharedTypes
+baliance.com/gooxml/schema/soo/pkg/content_types
+baliance.com/gooxml/schema/soo/pkg/metadata/core_properties
+baliance.com/gooxml/schema/soo/pkg/relationships
+baliance.com/gooxml/schema/soo/schemaLibrary
+baliance.com/gooxml/schema/soo/wml
+baliance.com/gooxml/zippkg
+# golang.org/x/sys v0.0.0-20220811171246-fbc7d0a398ab
+## explicit; go 1.17
+golang.org/x/sys/internal/unsafeheader
+golang.org/x/sys/windows
+golang.org/x/sys/windows/registry
+golang.org/x/sys/windows/svc
+golang.org/x/sys/windows/svc/debug
+golang.org/x/sys/windows/svc/eventlog
