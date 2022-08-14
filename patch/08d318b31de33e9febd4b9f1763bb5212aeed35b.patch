@@ -1,0 +1,33 @@
+From 08d318b31de33e9febd4b9f1763bb5212aeed35b Mon Sep 17 00:00:00 2001
+From: Todd <todd@baliance.com>
+Date: Wed, 28 Nov 2018 07:49:26 -0500
+Subject: [PATCH] document: look for merge fields in tables
+
+Fixes #223
+---
+ document/mailmerge.go | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/document/mailmerge.go b/document/mailmerge.go
+index 7a6825cbd..adb5a5ecd 100644
+--- a/document/mailmerge.go
++++ b/document/mailmerge.go
+@@ -89,8 +89,17 @@ func parseField(mf string) mergeFieldInfo {
+ 
+ // MergeFields returns the list of all mail merge fields found in the document.
+ func (d Document) mergeFields() []mergeFieldInfo {
++	paragraphs := []Paragraph{}
+ 	mf := []mergeFieldInfo{}
+-	for _, p := range d.Paragraphs() {
++	for _, t := range d.Tables() {
++		for _, r := range t.Rows() {
++			for _, c := range r.Cells() {
++				paragraphs = append(paragraphs, c.Paragraphs()...)
++			}
++		}
++	}
++	paragraphs = append(paragraphs, d.Paragraphs()...)
++	for _, p := range paragraphs {
+ 		runs := p.Runs()
+ 		begIdx := -1
+ 		sepIdx := -1
